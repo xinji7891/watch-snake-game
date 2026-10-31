@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>贪吃蛇</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#070b14;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;user-select:none;-webkit-user-select:none;touch-action:none}
+
+#hud{position:fixed;top:0;left:0;right:0;padding:14px 22px;display:flex;justify-content:space-between;pointer-events:none;z-index:10;color:#6a90b8;font-size:11px;letter-spacing:2px}
+#hud .v{color:#fff;font-size:26px;font-weight:800;display:block;margin-top:2px;font-variant-numeric:tabular-nums}
+#hud .v.gold{color:#ffd23f}
+#hud .v.cyan{color:#4dd4e8}
+#hud .side.r{text-align:right}
+
+/* canvas 尺寸与位置由 JS 动态计算 */
+#c{
+  position:fixed;
+  left:50%;
+  transform:translateX(-50%);
+  display:block;
+  border-radius:14px;
+  touch-action:none;
+  box-shadow:0 10px 40px rgba(77,212,232,.15);
+}
+
+#dpad{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:168px;height:168px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:6px;z-index:9;touch-action:none}
+.dp{border-radius:14px;background:rgba(18,28,46,.85);border:1px solid rgba(80,140,200,.3);color:#9cc0e0;font-size:16px;line-height:1;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;-webkit-tap-highlight-color:transparent;touch-action:none}
+.dp:active{background:rgba(77,212,232,.4);color:#fff;transform:scale(.94)}
+.dp.up{grid-area:1/2/2/3}
+.dp.left{grid-area:2/1/3/2}
+.dp.right{grid-area:2/3/3/4}
+.dp.down{grid-area:3/2/4/3}
+
+#pauseBtn{position:fixed;right:18px;bottom:calc(20px + env(safe-area-inset-bottom,0px));width:52px;height:52px;border-radius:50%;background:rgba(20,32,52,.85);border:1px solid rgba(80,140,200,.28);color:#8ab0d0;font-size:11px;font-weight:700;font-family:inherit;z-index:9;cursor:pointer}
+#pauseBtn.on{color:#4dd4e8;border-color:rgba(77,212,232,.6)}
+
+#over{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:rgba(4,8,16,.92);z-index:20;padding:30px;text-align:center}
+#over.show{display:flex}
+#over .t{color:#fff;font:800 38px/1 sans-serif;text-shadow:0 4px 40px rgba(77,212,232,.8);letter-spacing:4px}
+#over .s{color:#8ab0d0;font-size:14px;line-height:2}
+#over .s b{color:#ffd23f;font-size:24px;font-weight:800}
+#over button{margin-top:10px;padding:15px 48px;font-size:16px;font-weight:700;background:linear-gradient(135deg,#4dd4e8,#2c9fb0);color:#04121a;border:none;border-radius:999px;font-family:inherit;letter-spacing:2px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div class="side"><span>得分</span><span class="v cyan" id="scoreV">0</span></div>
+  <div class="side r"><span>最高</span><span class="v gold" id="bestV">0</span></div>
+</div>
+
+<div id="dpad">
+  <button class="dp up"    data-dir="up">▲</button>
+  <button class="dp left"  data-dir="left">◀</button>
+  <button class="dp right" data-dir="right">▶</button>
+  <button class="dp down"  data-dir="down">▼</button>
+</div>
+
+<button id="pauseBtn">暂停</button>
+
+<div id="over">
+  <div class="t" id="ot">游戏结束</div>
+  <div class="s" id="os"></div>
+  <button id="ob">再来一局</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ===== 固定逻辑坐标系：永远 400×400 ===== */
+  var SIZE = 400;
+  var COLS = 20, ROWS = 20;
+  var CS = SIZE / COLS;
+
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var scoreV = document.getElementById('scoreV');
+  var bestV  = document.getElementById('bestV');
+  var overEl = document.getElementById('over');
+  var ot     = document.getElementById('ot');
+  var os     = document.getElementById('os');
+  var ob     = document.getElementById('ob');
+  var pauseBtn = document.getElementById('pauseBtn');
+
+  /* 高清适配 */
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width  = SIZE * dpr;
+  canvas.height = SIZE * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  /* ===== 布局：让棋盘占满 HUD 与方向键之间的空间 ===== */
+  var HUD_H = 74;         // 顶部 HUD 高度
+  var DPAD_H = 210;       // 底部方向键区域高度
+  function layout(){
+    var vw = window.innerWidth || 360;
+    var vh = window.innerHeight || 640;
+
+    var availW = vw * 0.94;
+    var availH = vh - HUD_H - DPAD_H;
+    if (availH < 180) availH = 180;
+
+    var size = Math.floor(Math.min(availW, availH, 480));
+    if (size < 180) size = 180;
+
+    canvas.style.width  = size + 'px';
+    canvas.style.height = size + 'px';
+    canvas.style.top    = Math.round(HUD_H + Math.max(0, (availH - size) / 2)) + 'px';
+  }
+  layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', function(){ setTimeout(layout, 120); });
+
+  /* ===== 游戏状态 ===== */
+  var STEP = 150;
+  var cells = [], dir = {x:1, y:0}, nextDir = null;
+ 
+
+  var apple = null;                 // 当前苹果坐标
+  var score = 0;
+  var best = 0;
+  var paused = false;
+  var dead = false;
+  var acc = 0, lastT = 0;
+
+  try { best = parseInt(localStorage.getItem('snake_best') || '0', 10) || 0; } catch (e) { best = 0; }
+  bestV.textContent = best;
+
+  /* ===== 工具 ===== */
+  function roundRect(x, y, w, h, r){
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+  }
+
+  /* ===== 苹果 ===== */
+  function spawnApple(){
+    var occupied = {}, i;
+    for (i = 0; i < cells.length; i++) occupied[cells[i].x + ',' + cells[i].y] = 1;
+
+    var free = [], x, y;
+    for (y = 0; y < ROWS; y++)
+      for (x = 0; x < COLS; x++)
+        if (!occupied[x + ',' + y]) free.push({x: x, y: y});
+
+    apple = free.length ? free[(Math.random() * free.length) | 0] : null;
+  }
+
+  /* ===== 开局 / 重开 ===== */
+  function reset(){
+    cells = [];
+    var cx = (COLS / 2) | 0, cy = (ROWS / 2) | 0;
+    for (var i = 0; i < 3; i++) cells.push({x: cx - i, y: cy});   // 头在右，初始向右
+
+    dir = {x: 1, y: 0};
+    nextDir = null;
+    score = 0;
+    scoreV.textContent = '0';
+    paused = false;
+    dead = false;
+    acc = 0;
+    lastT = 0;
+    pauseBtn.classList.remove('on');
+    pauseBtn.textContent = '暂停';
+    overEl.classList.remove('show');
+
+    spawnApple();
+    draw();
+  }
+
+  /* ===== 转向（禁止 180° 掉头）===== */
+  function setDir(nx, ny){
+    if (dead || paused) return;
+    var base = nextDir || dir;                 // 以“即将生效”的方向为基准
+    if (base.x === -nx && base.y === -ny) return;
+    if (base.x === nx && base.y === ny) return;
+    nextDir = {x: nx, y: ny};
+  }
+
+  /* ===== 走一步 ===== */
+  function step(){
+    if (nextDir){ dir = nextDir; nextDir = null; }
+
+    var head = {x: cells[0].x + dir.x, y: cells[0].y + dir.y};
+
+    /* 撞墙 */
+    if (head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS){ gameOver(); return; }
+
+    var willEat = !!(apple && head.x === apple.x && head.y === apple.y);
+
+    /* 撞自己：不吃苹果时，尾巴这格本次会移走，可以放过 */
+    var lastIdx = cells.length - 1;
+    for (var i = 0; i < cells.length; i++){
+      if (!willEat && i === lastIdx) continue;
+      if (cells[i].x === head.x && cells[i].y === head.y){ gameOver(); return; }
+    }
+
+    cells.unshift(head);
+
+    if (willEat){
+      score += 10;
+      scoreV.textContent = score;
+      if (score > best){
+        best = score;
+        bestV.textContent = best;
+        try { localStorage.setItem('snake_best', String(best)); } catch (e) {}
+      }
+      spawnApple();
+      if (!apple){ win(); return; }            // 棋盘填满
+    } else {
+      cells.pop();
+    }
+  }
+
+  function gameOver(){
+    dead = true;
+    ot.textContent = '游戏结束';
+    os.innerHTML = '本局得分 <b>' + score + '</b><br>最高分 ' + best;
+    overEl.classList.add('show');
+    draw();
+  }
+
+  function win(){
+    dead = true;
+    ot.textContent = '通关！';
+    os.innerHTML = '棋盘已满 <b>' + score + '</b><br>最高分 ' + best;
+    overEl.classList.add('show');
+    draw();
+  }
+
+  /* ===== 绘制 ===== */
+  function draw(){
+    /* 棋盘底 */
+    ctx.fillStyle = '#0b1220';
+    roundRect(0, 0, SIZE, SIZE, 14);
+    ctx.fill();
+
+    /* 网格 */
+    ctx.strokeStyle = 'rgba(80,140,200,.08)';
+    ctx.lineWidth = 1;
+    for (var i = 1; i < COLS; i++){
+      var p = Math.round(i * CS) + 0.5;
+      ctx.beginPath(); ctx.moveTo(p, 0);    ctx.lineTo(p, SIZE); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, p);    ctx.lineTo(SIZE, p); ctx.stroke();
+    }
+
+    /* 苹果：红色发光圆 + 高光 + 叶子（轻微呼吸） */
+    if (apple){
+      var ax = apple.x * CS + CS / 2;
+      var ay = apple.y * CS + CS / 2;
+      var pulse = 1 + Math.sin(Date.now() / 260) * 0.06;
+      var rr = CS * 0.36 * pulse;
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(255,77,94,.9)';
+      ctx.shadowBlur = 12;
+      ctx.fillStyle = '#ff4d5e';
+      ctx.beginPath(); ctx.arc(ax, ay, rr, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+
+      ctx.fillStyle = 'rgba(255,255,255,.8)';
+      ctx.beginPath(); ctx.arc(ax - CS * 0.11, ay - CS * 0.13, CS * 0.085, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#4dd4e8';
+      ctx.beginPath();
+      ctx.ellipse(ax + CS * 0.17, ay - CS * 0.3, CS * 0.13, CS * 0.06, -0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    /* 蛇：从尾到头绘制，头在最上层 */
+    for (var j = cells.length - 1; j >= 0; j--){
+      var c = cells[j];
+      var x = c.x * CS, y = c.y * CS;
+      var isHead = (j === 0);
+      var inset = isHead ? CS * 0.05 : CS * 0.12;
+      var w = CS - inset * 2;
+      var t = cells.length > 1 ? j / (cells.length - 1) : 0;   // 0=头 1=尾
+
+      if (isHead){
+        ctx.save();
+        ctx.shadowColor = 'rgba(77,212,232,.9)';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#8ef2ff';
+      } else {
+        var cr = Math.round(77 + (26 - 77) * t);
+        var cg = Math.round(212 + (72 - 212) * t);
+        var cb = Math.round(232 + (124 - 232) * t);
+        ctx.fillStyle = 'rgb(' + cr + ',' + cg + ',' + cb + ')';
+      }
+      roundRect(x + inset, y + inset, w, w, w * 0.32);
+      ctx.fill();
+      if (isHead) ctx.restore();
+
+      /* 蛇眼：朝当前前进方向 */
+      if (isHead){
+        var hx = x + CS / 2, hy = y + CS / 2;
+        var px = dir.y, py = dir.x;                  // 垂直方向
+        var off = CS * 0.17, fwd = CS * 0.15;
+        ctx.fillStyle = '#04121a';
+        ctx.beginPath();
+        ctx.arc(hx + dir.x * fwd + px * off, hy + dir.y * fwd + py * off, CS * 0.075, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(hx + dir.x * fwd - px * off, hy + dir.y * fwd - py * off, CS * 0.075, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  /* ===== 主循环 ===== */
+  function loop(ts){
+    requestAnimationFrame(loop);
+
+    if (!lastT) lastT = ts;
+    var dt = ts - lastT;
+    lastT = ts;
+
+    if (paused || dead) return;
+
+    acc += dt;
+    if (acc > 600) acc = 600;              // 切后台回来别连跳一大串
+
+    while (acc >= STEP){
+      acc -= STEP;
+      step();
+      if (dead) break;
+    }
+    draw();                                 // 每帧重绘：苹果有呼吸动画
+  }
+
+  /* ===== 输入 ===== */
+  function bindPress(el, fn){
+    if (window.PointerEvent){
+      el.addEventListener('pointerdown', function (e){ e.preventDefault(); fn(); });
+    } else {
+      var locked = false;
+      el.addEventListener('touchstart', function (e){
+        e.preventDefault();
+        locked = true;
+        fn();
+        setTimeout(function (){ locked = false; }, 350);
+      }, {passive: false});
+      el.addEventListener('click', function (e){ e.preventDefault(); if (!locked) fn(); });
+    }
+  }
+
+  /* 键盘 */
+  var KEYS = {
+    ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0],
+    w:[0,-1], s:[0,1], a:[-1,0], d:[1,0],
+    W:[0,-1], S:[0,1], A:[-1,0], D:[1,0]
+  };
+  window.addEventListener('keydown', function (e){
+    var k = KEYS[e.key];
+    if (!k) return;
+    e.preventDefault();
+    setDir(k[0], k[1]);
+  });
+
+  /* 方向键 */
+  var DIRS = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]};
+  var pads = document.querySelectorAll('.dp');
+  for (var n = 0; n < pads.length; n++){
+    (function (btn){
+      bindPress(btn, function (){
+        var d = DIRS[btn.getAttribute('data-dir')];
+        if (d) setDir(d[0], d[1]);
+      });
+    })(pads[n]);
+  }
+
+  /* canvas 上滑动 */
+  (function (){
+    var sx = 0, sy = 0, tracking = false;
+    function start(e){ var t = e.touches ? e.touches[0] : e; sx = t.clientX; sy = t.clientY; tracking = true; }
+    function move(e){
+      if (!tracking) return;
+      var t = e.touches ? e.touches[0] : e;
+      var dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Math.abs(dx) < 24 && Math.abs(dy) < 24) return;
+      if (Math.abs(dx) > Math.abs(dy)) setDir(dx > 0 ? 1 : -1, 0);
+      else setDir(0, dy > 0 ? 1 : -1);
+      tracking = false;
+    }
+    function end(){ tracking = false; }
+    if (window.PointerEvent){
+      canvas.addEventListener('pointerdown', start);
+      canvas.addEventListener('pointermove', move);
+      canvas.addEventListener('pointerup', end);
+      canvas.addEventListener('pointercancel', end);
+    } else {
+      canvas.addEventListener('touchstart', start, {passive: true});
+      canvas.addEventListener('touchmove', move, {passive: true});
+      canvas.addEventListener('touchend', end);
+    }
+  })();
+
+  /* 暂停 */
+  bindPress(pauseBtn, function (){
+    if (dead) return;
+    paused = !paused;
+    pauseBtn.classList.toggle('on', paused);
+    pauseBtn.textContent = paused ? '继续' : '暂停';
+  });
+
+  /* 再来一局 */
+  bindPress(ob, function (){ reset(); });
+
+  /* 切到后台自动暂停 */
+  document.addEventListener('visibilitychange', function (){
+    if (document.hidden && !dead && !paused){
+      paused = true;
+      pauseBtn.classList.add('on');
+      pauseBtn.textContent = '继续';
+    }
+  });
+
+  /* 启动 */
+  reset();
+  requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
